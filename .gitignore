@@ -161,3 +161,7 @@ tags
 
 # .lock
 *.lock
+
+
+venv*
+benchmark/*.csv

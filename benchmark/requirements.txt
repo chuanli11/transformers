@@ -1,0 +1,9 @@
+packaging
+tqdm>=4.27
+regex
+sacremoses
+requests
+filelock
+huggingface_hub
+py3nvml
+psutil
