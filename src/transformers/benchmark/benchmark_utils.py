@@ -667,16 +667,16 @@ class Benchmark(ABC):
         pass
 
     def inference_speed(self, *args, **kwargs) -> float:
-        return separate_process_wrapper_fn(self._inference_speed, self.args.do_multi_processing)(*args, **kwargs)
+        return self._inference_speed(*args, **kwargs)
 
     def train_speed(self, *args, **kwargs) -> float:
-        return separate_process_wrapper_fn(self._train_speed, self.args.do_multi_processing)(*args, **kwargs)
+        return self._train_speed(*args, **kwargs)
 
     def inference_memory(self, *args, **kwargs) -> [Memory, Optional[MemorySummary]]:
-        return separate_process_wrapper_fn(self._inference_memory, self.args.do_multi_processing)(*args, **kwargs)
+        return self._inference_memory(*args, **kwargs)
 
     def train_memory(self, *args, **kwargs) -> [Memory, Optional[MemorySummary]]:
-        return separate_process_wrapper_fn(self._train_memory, self.args.do_multi_processing)(*args, **kwargs)
+        return self._train_memory(*args, **kwargs)
 
     def run(self):
         result_dict = {model_name: {} for model_name in self.args.model_names}
