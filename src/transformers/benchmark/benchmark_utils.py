@@ -810,13 +810,17 @@ class Benchmark(ABC):
             if self.args.is_gpu:
                 info["num_gpus"] = 1  # TODO(PVP) Currently only single GPU is supported
                 if is_py3nvml_available():
-                    nvml.nvmlInit()
-                    handle = nvml.nvmlDeviceGetHandleByIndex(self.args.device_idx)
-                    info["gpu"] = nvml.nvmlDeviceGetName(handle)
-                    info["gpu_ram_mb"] = bytes_to_mega_bytes(nvml.nvmlDeviceGetMemoryInfo(handle).total)
-                    info["gpu_power_watts"] = nvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000
-                    info["gpu_performance_state"] = nvml.nvmlDeviceGetPerformanceState(handle)
-                    nvml.nvmlShutdown()
+                    try:
+                        nvml.nvmlInit()
+                        handle = nvml.nvmlDeviceGetHandleByIndex(self.args.device_idx)
+                        info["gpu"] = nvml.nvmlDeviceGetName(handle)
+                        info["gpu_ram_mb"] = bytes_to_mega_bytes(nvml.nvmlDeviceGetMemoryInfo(handle).total)
+                        info["gpu_power_watts"] = nvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000
+                        info["gpu_performance_state"] = nvml.nvmlDeviceGetPerformanceState(handle)
+                        nvml.nvmlShutdown()
+                    except:
+                        print("nvml can't be initialized. Maybe you are not using NVIDIA GPUs")
+
                 else:
                     logger.warning(
                         "py3nvml not installed, we won't log GPU memory usage. "
