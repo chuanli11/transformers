@@ -1,6 +1,7 @@
 import sys
 sys.path.insert(1, '/home/ubuntu/projects/transformers/src')
 import timeit
+import time
 import torch
 
 from transformers.models.auto.configuration_auto import AutoConfig
@@ -11,10 +12,11 @@ training = False
 memory = False
 speed = True
 model_names = ["bert-base-uncased"]
-batch_sizes = [128]
+batch_sizes = [64]
 sequence_lengths = [64]
 fp16 = False
 repeat = 5
+number = 10
 
 config_dict = {
     model_name: AutoConfig.from_pretrained(model_name) for model_name in model_names
@@ -85,12 +87,21 @@ for c, model_name in enumerate(model_names):
     for batch_size in batch_sizes:
         for sequence_length in sequence_lengths:
             if inference:
-                
+
                 if speed:
                     func = prepare_inference_func(model_name, batch_size, sequence_length)
-                    runtimes = timeit.repeat(
-                        func,
-                        repeat=repeat,
-                        number=10,
-                    )
-                    print(runtimes)
+
+                    for i_run in range(repeat):
+                        t0 = time.time()
+                        for i_batch in range(number):
+                            func()
+                        torch.cuda.current_stream().synchronize()
+                        t1 = time.time()
+                        print(t1 - t0)
+
+                    # runtimes = timeit.repeat(
+                    #     func,
+                    #     repeat=repeat,
+                    #     number=10,
+                    # )
+

@@ -18,7 +18,7 @@
 """
 
 
-import timeit
+import time
 from typing import Callable, Optional
 
 from ..configuration_utils import PretrainedConfig
@@ -200,18 +200,19 @@ class PyTorchBenchmark(Benchmark):
             if self.args.is_tpu or self.args.torchscript:
                 # run additional 10 times to stabilize compilation for tpu and torchscript
                 logger.info("Do inference on TPU or torchscript. Running model 5 times to stabilize compilation")
-                timeit.repeat(
-                    func,
-                    repeat=1,
-                    number=5,
-                )
+                for i_batch in range(5):
+                    func()
+                torch.cuda.current_stream().synchronize()
 
             # as written in https://docs.python.org/2/library/timeit.html#timeit.Timer.repeat, min should be taken rather than the average
-            runtimes = timeit.repeat(
-                func,
-                repeat=self.args.repeat,
-                number=10,
-            )
+            runtimes = []
+            for i_run in range(self.args.repeat):
+                t0 = time.time()
+                for i_batch in range(10):
+                    func()
+                torch.cuda.current_stream().synchronize()
+                t1 = time.time()
+                runtimes.append(t1 - t0)
 
             if self.args.is_tpu and self.args.torch_xla_tpu_print_metrics:
                 import torch_xla.debug.metrics as met
