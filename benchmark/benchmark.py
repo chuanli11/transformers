@@ -13,7 +13,12 @@ list_models = [
         "distilbert-base-uncased",
         "gpt2",
         "gpt2-medium",
-        "gpt2-large"]
+        "gpt2-large",
+        "google/mt5-small",
+        "google/mt5-base",
+        "google/mt5-large",
+        "google/mt5-xl",
+]
 
 
 args = PyTorchBenchmarkArguments(
