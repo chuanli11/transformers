@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(1, '/home/ubuntu/projects/transformers//src')
+sys.path.insert(1, '/home/ubuntu/projects/transformers/src')
 
 from transformers import PyTorchBenchmark, PyTorchBenchmarkArguments, BertConfig
 
