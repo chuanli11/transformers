@@ -1,8 +1,14 @@
 import sys
-sys.path.insert(1, '/home/ubuntu/projects/transformers/src')
-import timeit
+import os
+from multiprocessing import Queue
+
+dir_path = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(1, dir_path + '/../src')
+
+from typing import Callable
 import time
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -11,25 +17,46 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from transformers.models.auto.configuration_auto import AutoConfig
 
-device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-inference = False
+inference = True
 train = True
 memory = False
 speed = True
 model_names = ["bert-base-uncased"]
 batch_sizes = [32]
 sequence_lengths = [64]
-fp16 = False
-repeat = 5
-number = 100
-num_gpu = 2
-optimize = False
+fp16 = True
+repeat = 2
+number = 10
+num_gpu = 1
+optimize = True
+backend = 'nccl'
 
 config_dict = {
     model_name: AutoConfig.from_pretrained(model_name) for model_name in model_names
 }
 
-def prepare_inference_func(model_name: str, batch_size: int, sequence_length: int):
+def setup(rank: int, world_size: int, backend: str):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+
+    # initialize the process group
+    dist.init_process_group(backend, rank=rank, world_size=world_size)
+
+def cleanup():
+    dist.destroy_process_group()
+
+def run_ddp(ddp_func: Callable[[], None], world_size: int, number: int, model_name: str, batch_size: int, sequence_length: int, optimize: bool, backend: str):
+    tqueue = mp.get_context('spawn').SimpleQueue()
+    mp.spawn(ddp_func,
+             args=(world_size, number, model_name, batch_size, sequence_length, optimize, backend, tqueue),
+             nprocs=world_size,
+             join=True)
+    return tqueue.get()
+
+
+def inference_func(number: int, model_name: str, batch_size: int, sequence_length: int):
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
     config = config_dict[model_name]
 
     has_model_class_in_config = (
@@ -67,22 +94,28 @@ def prepare_inference_func(model_name: str, batch_size: int, sequence_length: in
 
         def encoder_decoder_forward():
             with torch.no_grad():
-                outputs = inference_model(input_ids, decoder_input_ids=input_ids)
-            return outputs
+                t0 = time.time()
+                for i_batch in range(number):
+                    outputs = inference_model(input_ids, decoder_input_ids=input_ids)
+                t1 = time.time()
+            return t1 - t0
 
         def encoder_forward():
             with torch.no_grad():
-                outputs = inference_model(input_ids)
-            return outputs
+                t0 = time.time()
+                for i_batch in range(number):
+                    outputs = inference_model(input_ids)
+                t1 = time.time()
+            return t1 - t0
 
         func = encoder_decoder_forward if config.is_encoder_decoder else encoder_forward
         
-        return func
+        return func()
 
 
-def prepare_train_func(rank: int, num_gpu: int, number: int, model_name: str, batch_size: int, sequence_length: int, optimize: bool):
+def train_func(rank: int, num_gpu: int, number: int, model_name: str, batch_size: int, sequence_length: int, optimize: bool, backend: str, tqueue: Queue):
 
-    dist.init_process_group(backend="nccl", init_method='env://', rank=rank, world_size=num_gpu)
+    setup(rank, num_gpu, backend)
 
     config = config_dict[model_name]
 
@@ -104,7 +137,6 @@ def prepare_train_func(rank: int, num_gpu: int, number: int, model_name: str, ba
             )
 
         model.to(rank)
-        model.train()
         model = DDP(model, device_ids=[rank])
 
         if optimize:
@@ -112,10 +144,10 @@ def prepare_train_func(rank: int, num_gpu: int, number: int, model_name: str, ba
 
         # encoder-decoder has vocab size saved differently
         vocab_size = config.vocab_size if hasattr(config, "vocab_size") else config.encoder.vocab_size
-        input_ids = torch.randint(vocab_size, (batch_size, sequence_length), dtype=torch.long, device=device)
+        input_ids = torch.randint(vocab_size, (batch_size, sequence_length), dtype=torch.long).to(rank)
 
         if fp16:
-            if not device.type == 'cuda':
+            if torch.cuda.device_count() < rank + 1:
                 raise ValueError("Mixed precision is possible only for GPU.")
             # amp seems to have memory leaks so that memory usage
             # is measured using .half() for now https://github.com/NVIDIA/apex/issues/439
@@ -132,9 +164,8 @@ def prepare_train_func(rank: int, num_gpu: int, number: int, model_name: str, ba
                     optimizer.step()
             
             if rank == 0:
-                torch.cuda.current_stream().synchronize()
                 t1 = time.time()
-                print(t1 - t0)
+                tqueue.put(t1 - t0)
 
         def compute_loss_and_backprob_encoder_decoder():
             if rank == 0:
@@ -147,9 +178,8 @@ def prepare_train_func(rank: int, num_gpu: int, number: int, model_name: str, ba
                     optimizer.step()
 
             if rank == 0:
-                torch.cuda.current_stream().synchronize()
                 t1 = time.time()
-                print(t1 - t0)
+                tqueue.put(t1 - t0)
 
         func = (
             compute_loss_and_backprob_encoder_decoder
@@ -159,7 +189,9 @@ def prepare_train_func(rank: int, num_gpu: int, number: int, model_name: str, ba
         
         func()
 
-def main():
+    cleanup()
+
+if __name__ == "__main__":
     for c, model_name in enumerate(model_names):
         print(f"{c + 1} / {len(model_names)}")
 
@@ -171,24 +203,27 @@ def main():
 
         for batch_size in batch_sizes:
             for sequence_length in sequence_lengths:
-
+                
                 if inference:
-                    if speed:
-                        func = prepare_inference_func(model_name, batch_size, sequence_length)
-                        for i_run in range(repeat):
-                            t0 = time.time()
-                            for i_batch in range(number):
-                                func()
-                            torch.cuda.current_stream().synchronize()
-                            t1 = time.time()
-                            print(t1 - t0)
+                    for i_run in range(repeat):
+                        t = inference_func(
+                            number,
+                            model_name,
+                            batch_size,
+                            sequence_length
+                        )
+                        print(t)
 
                 if train:
-                    if speed:
-                        mp.spawn(prepare_train_func,
-                            args=(num_gpu, number, model_name, batch_size, sequence_length, optimize),
-                            nprocs=num_gpu,
-                            join=True)
-                    
-if __name__=="__main__":
-    main()
+                    for i_run in range(repeat):
+                        t = run_ddp(
+                            train_func, 
+                            num_gpu,
+                            number, 
+                            model_name, 
+                            batch_size, 
+                            sequence_length, 
+                            optimize,
+                            backend
+                        )
+                        print(t)
