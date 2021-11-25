@@ -4,6 +4,10 @@ import timeit
 import time
 import torch
 import torch.optim as optim
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 
 from transformers.models.auto.configuration_auto import AutoConfig
 
@@ -13,18 +17,17 @@ train = True
 memory = False
 speed = True
 model_names = ["bert-base-uncased"]
-batch_sizes = [64]
+batch_sizes = [32]
 sequence_lengths = [64]
 fp16 = False
 repeat = 5
-number = 10
+number = 100
 num_gpu = 2
-optimize = True
+optimize = False
 
 config_dict = {
     model_name: AutoConfig.from_pretrained(model_name) for model_name in model_names
 }
-
 
 def prepare_inference_func(model_name: str, batch_size: int, sequence_length: int):
     config = config_dict[model_name]
@@ -77,7 +80,9 @@ def prepare_inference_func(model_name: str, batch_size: int, sequence_length: in
         return func
 
 
-def prepare_train_func(model_name: str, batch_size: int, sequence_length: int, optimize: bool):
+def prepare_train_func(rank: int, num_gpu: int, number: int, model_name: str, batch_size: int, sequence_length: int, optimize: bool):
+
+    dist.init_process_group(backend="nccl", init_method='env://', rank=rank, world_size=num_gpu)
 
     config = config_dict[model_name]
 
@@ -98,8 +103,10 @@ def prepare_train_func(model_name: str, batch_size: int, sequence_length: int, o
                 f"{model_class} does not exist. If you just want to test the pretrained model, you might want to set `--only_pretrain_model` or `args.only_pretrain_model=True`."
             )
 
+        model.to(rank)
         model.train()
-        model.to(device)
+        model = DDP(model, device_ids=[rank])
+
         if optimize:
             optimizer = optim.SGD(model.parameters(), lr=0.001)
 
@@ -115,60 +122,73 @@ def prepare_train_func(model_name: str, batch_size: int, sequence_length: int, o
             model.half()
 
         def compute_loss_and_backprob_encoder():
-            loss = model(input_ids, labels=input_ids)[0]
-            loss.backward()
-            if optimize:
-                optimizer.step()
-            return loss
+            if rank == 0:
+                t0 = time.time()
+
+            for i_batch in range(number):
+                loss = model(input_ids, labels=input_ids)[0]
+                loss.backward()
+                if optimize:
+                    optimizer.step()
+            
+            if rank == 0:
+                torch.cuda.current_stream().synchronize()
+                t1 = time.time()
+                print(t1 - t0)
 
         def compute_loss_and_backprob_encoder_decoder():
-            loss = model(input_ids, decoder_input_ids=input_ids, labels=input_ids)[0]
-            loss.backward()
-            if optimize:
-                optimizer.step()
-            return loss
+            if rank == 0:
+                t0 = time.time()
+
+            for i_batch in range(number):
+                loss = model(input_ids, decoder_input_ids=input_ids, labels=input_ids)[0]
+                loss.backward()
+                if optimize:
+                    optimizer.step()
+
+            if rank == 0:
+                torch.cuda.current_stream().synchronize()
+                t1 = time.time()
+                print(t1 - t0)
 
         func = (
             compute_loss_and_backprob_encoder_decoder
             if config.is_encoder_decoder
             else compute_loss_and_backprob_encoder
         )
-        return func
+        
+        func()
 
+def main():
+    for c, model_name in enumerate(model_names):
+        print(f"{c + 1} / {len(model_names)}")
 
-for c, model_name in enumerate(model_names):
-    print(f"{c + 1} / {len(model_names)}")
+        model_dict = {
+            "bs": batch_sizes,
+            "ss": sequence_lengths,
+            "result": {i: {} for i in batch_sizes},
+        }
 
-    model_dict = {
-        "bs": batch_sizes,
-        "ss": sequence_lengths,
-        "result": {i: {} for i in batch_sizes},
-    }
+        for batch_size in batch_sizes:
+            for sequence_length in sequence_lengths:
 
-    for batch_size in batch_sizes:
-        for sequence_length in sequence_lengths:
+                if inference:
+                    if speed:
+                        func = prepare_inference_func(model_name, batch_size, sequence_length)
+                        for i_run in range(repeat):
+                            t0 = time.time()
+                            for i_batch in range(number):
+                                func()
+                            torch.cuda.current_stream().synchronize()
+                            t1 = time.time()
+                            print(t1 - t0)
 
-            if inference:
-                if speed:
-                    func = prepare_inference_func(model_name, batch_size, sequence_length)
-                    for i_run in range(repeat):
-                        t0 = time.time()
-                        for i_batch in range(number):
-                            func()
-                        torch.cuda.current_stream().synchronize()
-                        t1 = time.time()
-                        print(t1 - t0)
-
-            if train:
-                if speed:
-                    func = prepare_train_func(model_name, batch_size, sequence_length, optimize)
-                    for i_run in range(repeat):
-                        t0 = time.time()
-                        for i_batch in range(number):
-                            func()
-                        torch.cuda.current_stream().synchronize()
-                        t1 = time.time()
-                        print(t1 - t0)                        
-
-
-
+                if train:
+                    if speed:
+                        mp.spawn(prepare_train_func,
+                            args=(num_gpu, number, model_name, batch_size, sequence_length, optimize),
+                            nprocs=num_gpu,
+                            join=True)
+                    
+if __name__=="__main__":
+    main()
