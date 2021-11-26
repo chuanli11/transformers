@@ -1,6 +1,7 @@
 import sys
 import os
 from multiprocessing import Queue
+import subprocess
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(1, dir_path + '/../src')
@@ -28,7 +29,7 @@ precision = "fp32"
 repeat = 2
 number = 10
 number_warmup = 5
-num_gpu = 2
+num_gpu = 1
 optimize = True
 backend = 'nccl'
 
@@ -214,6 +215,24 @@ def train_func(rank: int, num_gpu: int, number: int, model_name: str, batch_size
     cleanup()
 
 if __name__ == "__main__":
+
+    info = {}
+
+    try:
+        subprocess.check_output('nvidia-smi >/dev/null 2>&1', shell=True)
+        import py3nvml.py3nvml as nvml
+        nvml.nvmlInit()
+        handle = nvml.nvmlDeviceGetHandleByIndex(0)
+        info["gpu"] = nvml.nvmlDeviceGetName(handle).replace(" ", "_")
+        nvml.nvmlShutdown()
+    except:
+        first = ["rocm-smi", "-d 0", "--showproductname"]
+        second = ["awk", '/Card SKU/ { print $5 }']
+        p1 = subprocess.Popen(first, stdout=subprocess.PIPE)
+        p2 = subprocess.Popen(second, stdin=p1.stdout, stdout=subprocess.PIPE)
+        out, err = p2.communicate()
+        info["gpu"] = 'AMD_' + out.decode().strip('\n')
+
     for c, model_name in enumerate(model_names):
         print(f"{c + 1} / {len(model_names)}")
 
@@ -228,6 +247,7 @@ if __name__ == "__main__":
                 
                 if inference:
                     for i_run in range(repeat):
+                        throughputs = []
                         try:
                             t = inference_func(
                                 number,
@@ -238,10 +258,16 @@ if __name__ == "__main__":
                         except:
                             t = 0
                             print(f"BS: {batch_size}, Sequence Length: {sequence_length}, {model_name} didn't work for inference in {precision}. Maybe OOM")
-                        print(t)
+                        if t > 0:
+                            throughputs.append(batch_size * number / t)
+                
+                    if len(throughputs) > 0:
+                        print(min(throughputs))
+                        
 
                 if train:
                     for i_run in range(repeat):
+                        throughputs = []
                         try:
                             t = run_ddp(
                                 train_func, 
@@ -256,5 +282,9 @@ if __name__ == "__main__":
                         except:
                             t = 0
                             print(f"BS: {batch_size}, Sequence Length: {sequence_length}, {model_name} didn't work for {num_gpu} DDP training in {precision}. Maybe OOM")
-                        print(t)
+                        if t > 0:
+                            throughputs.append(batch_size * number * num_gpu / t)
+
+                    if len(throughputs) > 0:
+                        print(min(throughputs))
 
