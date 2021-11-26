@@ -101,6 +101,7 @@ def inference_func(number: int, model_name: str, batch_size: int, sequence_lengt
                 t0 = time.time()
                 for i_batch in range(number):
                     outputs = inference_model(input_ids, decoder_input_ids=input_ids)
+                torch.cuda.current_stream().synchronize()
                 t1 = time.time()
             return t1 - t0
 
@@ -111,6 +112,7 @@ def inference_func(number: int, model_name: str, batch_size: int, sequence_lengt
                 t0 = time.time()
                 for i_batch in range(number):
                     outputs = inference_model(input_ids)
+                torch.cuda.current_stream().synchronize()
                 t1 = time.time()
             return t1 - t0
 
