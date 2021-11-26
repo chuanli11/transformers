@@ -22,11 +22,12 @@ train = True
 memory = False
 speed = True
 model_names = ["bert-base-uncased"]
-batch_sizes = [16, 32, 64]
+batch_sizes = [32, 64, 128]
 sequence_lengths = [64]
 precision = "fp32"
 repeat = 2
 number = 10
+number_warmup = 5
 num_gpu = 2
 optimize = True
 backend = 'nccl'
@@ -93,7 +94,10 @@ def inference_func(number: int, model_name: str, batch_size: int, sequence_lengt
         inference_model = model
 
         def encoder_decoder_forward():
+            
             with torch.no_grad():
+                for i_batch in range(number_warmup):
+                    outputs = inference_model(input_ids, decoder_input_ids=input_ids)
                 t0 = time.time()
                 for i_batch in range(number):
                     outputs = inference_model(input_ids, decoder_input_ids=input_ids)
@@ -102,6 +106,8 @@ def inference_func(number: int, model_name: str, batch_size: int, sequence_lengt
 
         def encoder_forward():
             with torch.no_grad():
+                for i_batch in range(number_warmup):
+                    outputs = inference_model(input_ids)
                 t0 = time.time()
                 for i_batch in range(number):
                     outputs = inference_model(input_ids)
@@ -154,6 +160,13 @@ def train_func(rank: int, num_gpu: int, number: int, model_name: str, batch_size
             model.half()
 
         def compute_loss_and_backprob_encoder():
+
+            for i_batch in range(number_warmup):
+                loss = model(input_ids, labels=input_ids)[0]
+                loss.backward()
+                if optimize:
+                    optimizer.step()
+
             if rank == 0:
                 t0 = time.time()
 
@@ -168,6 +181,13 @@ def train_func(rank: int, num_gpu: int, number: int, model_name: str, batch_size
                 tqueue.put(t1 - t0)
 
         def compute_loss_and_backprob_encoder_decoder():
+
+            for i_batch in range(number_warmup):
+                loss = model(input_ids, labels=input_ids)[0]
+                loss.backward()
+                if optimize:
+                    optimizer.step()
+
             if rank == 0:
                 t0 = time.time()
 
