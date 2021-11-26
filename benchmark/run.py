@@ -22,12 +22,12 @@ train = True
 memory = False
 speed = True
 model_names = ["bert-base-uncased"]
-batch_sizes = [32]
+batch_sizes = [16, 32, 64]
 sequence_lengths = [64]
-fp16 = True
+precision = "fp32"
 repeat = 2
 number = 10
-num_gpu = 1
+num_gpu = 2
 optimize = True
 backend = 'nccl'
 
@@ -83,7 +83,7 @@ def inference_func(number: int, model_name: str, batch_size: int, sequence_lengt
         vocab_size = config.vocab_size if hasattr(config, "vocab_size") else config.encoder.vocab_size
         input_ids = torch.randint(vocab_size, (batch_size, sequence_length), dtype=torch.long, device=device)
 
-        if fp16:
+        if precision == "fp16":
             if not device.type == 'cuda':
                 raise ValueError("Mixed precision is possible only for GPU.")
             # amp seems to have memory leaks so that memory usage
@@ -146,7 +146,7 @@ def train_func(rank: int, num_gpu: int, number: int, model_name: str, batch_size
         vocab_size = config.vocab_size if hasattr(config, "vocab_size") else config.encoder.vocab_size
         input_ids = torch.randint(vocab_size, (batch_size, sequence_length), dtype=torch.long).to(rank)
 
-        if fp16:
+        if precision == "fp16":
             if torch.cuda.device_count() < rank + 1:
                 raise ValueError("Mixed precision is possible only for GPU.")
             # amp seems to have memory leaks so that memory usage
@@ -206,24 +206,33 @@ if __name__ == "__main__":
                 
                 if inference:
                     for i_run in range(repeat):
-                        t = inference_func(
-                            number,
-                            model_name,
-                            batch_size,
-                            sequence_length
-                        )
+                        try:
+                            t = inference_func(
+                                number,
+                                model_name,
+                                batch_size,
+                                sequence_length
+                            )
+                        except:
+                            t = 0
+                            print(f"BS: {batch_size}, Sequence Length: {sequence_length}, {model_name} didn't work for inference in {precision}. Maybe OOM")
                         print(t)
 
                 if train:
                     for i_run in range(repeat):
-                        t = run_ddp(
-                            train_func, 
-                            num_gpu,
-                            number, 
-                            model_name, 
-                            batch_size, 
-                            sequence_length, 
-                            optimize,
-                            backend
-                        )
+                        try:
+                            t = run_ddp(
+                                train_func, 
+                                num_gpu,
+                                number, 
+                                model_name, 
+                                batch_size, 
+                                sequence_length, 
+                                optimize,
+                                backend
+                            )
+                        except:
+                            t = 0
+                            print(f"BS: {batch_size}, Sequence Length: {sequence_length}, {model_name} didn't work for {num_gpu} DDP training in {precision}. Maybe OOM")
                         print(t)
+
